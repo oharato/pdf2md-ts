@@ -3,11 +3,13 @@ import { extractTextBoxes } from "./pdf/textExtractor.js";
 import { extractVectorSegments } from "./pdf/operatorExtractor.js";
 import { resolveTableGrids } from "./fusion/cellResolver.js";
 import { renderPageContent } from "./markdown/render.js";
+import { tdnetHeadingPlugin } from "./markdown/plugins/tdnetHeading.js";
 import type { ExtractOptions, ExtractResult, TableGrid } from "./core/types.js";
 
 export async function extractTablesFromPdf(filePath: string, options: ExtractOptions = {}): Promise<ExtractResult> {
   const pdf = await loadPdfDocument(filePath);
   const pages = options.pages ?? Array.from({ length: pdf.numPages }, (_, index) => index + 1);
+  const plugins = options.plugins ?? [tdnetHeadingPlugin];
 
   const tables: TableGrid[] = [];
   const warnings: string[] = [];
@@ -24,11 +26,10 @@ export async function extractTablesFromPdf(filePath: string, options: ExtractOpt
       warnings.push(...grid.warnings.map((warning) => `p${pageNumber}: ${warning}`));
     }
 
-    // Text boxes not consumed by any table cell → free text
     const consumedSet = new Set(consumedIds);
     const freeTextBoxes = textBoxes.filter((tb) => !consumedSet.has(tb.id));
 
-    pageMarkdowns.push(renderPageContent(pageNumber, freeTextBoxes, grids));
+    pageMarkdowns.push(renderPageContent(pageNumber, freeTextBoxes, grids, plugins));
   }
 
   const markdown = pageMarkdowns.join("\n\n");
@@ -36,3 +37,5 @@ export async function extractTablesFromPdf(filePath: string, options: ExtractOpt
 }
 
 export type { ExtractOptions, ExtractResult, TableGrid } from "./core/types.js";
+export type { TextLinePlugin, TextLineContext } from "./markdown/plugins/types.js";
+export { tdnetHeadingPlugin } from "./markdown/plugins/tdnetHeading.js";

@@ -24,6 +24,13 @@ export type TextBox = {
   text: string;
   bounds: Bounds;
   pageNumber: number;
+  /** Dominant font size (pts) of the text items in this box. */
+  fontSize?: number;
+  /**
+   * True when the text was rendered with PDF text rendering mode 2 (fill+stroke),
+   * which makes it appear visually bold even if the underlying font is not bold.
+   */
+  isBold?: boolean;
 };
 
 export type RayHit = {
@@ -56,11 +63,22 @@ export type TableGrid = {
   warnings: string[];
   /** Top Y coordinate of the table on the page (PDF coordinate: larger = higher). */
   topY?: number;
+  /**
+   * True when this grid was detected as a borderless two-column layout
+   * (no vector lines).  Rendered as a nested list instead of a Markdown table.
+   */
+  isBorderless?: boolean;
 };
 
 export type ExtractOptions = {
   pages?: number[];
   debug?: boolean;
+  /**
+   * Ordered list of text-line plugins applied during Markdown rendering.
+   * The first plugin returning a non-null prefix wins.
+   * Defaults to `[tdnetHeadingPlugin]` when not specified.
+   */
+  plugins?: import("../markdown/plugins/types.js").TextLinePlugin[];
 };
 
 export type ExtractResult = {
