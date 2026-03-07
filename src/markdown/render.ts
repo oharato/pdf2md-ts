@@ -1,17 +1,12 @@
 import type { TableGrid, TextBox } from "../core/types.js";
-import type { TextLinePlugin } from "./plugins/types.js";
-
-function normalizeFullWidthAscii(text: string): string {
-  return text.replace(/[！-～]/g, (char) =>
-    String.fromCharCode(char.charCodeAt(0) - 0xfee0)
-  );
-}
-
-function escapePipes(text: string): string {
-  return normalizeFullWidthAscii(text)
-    .replaceAll("|", "\\|")
-    .replaceAll("\n", "<br>");
-}
+import { defaultBorderlessTablePlugins } from "./plugins/borderlessTablePlugins.js";
+import { defaultPageBlockPlugins } from "./plugins/pageBlockPlugins.js";
+import type {
+  BorderlessTablePlugin,
+  PageBlockPlugin,
+  TextLinePlugin,
+} from "./plugins/types.js";
+import { escapePipes, normalizeFullWidthAscii, parsePipeRow } from "./utils.js";
 
 /**
  * Render a borderless two-column TableGrid as a nested Markdown list.
@@ -21,7 +16,19 @@ function escapePipes(text: string): string {
  *       - value text       ← indented sub-bullet (omitted when value is empty)
  */
 export function renderBorderlessTableToMarkdown(table: TableGrid): string {
+  return renderBorderlessTableToMarkdownWithPlugins(table, defaultBorderlessTablePlugins);
+}
+
+function renderBorderlessTableToMarkdownWithPlugins(
+  table: TableGrid,
+  plugins: BorderlessTablePlugin[]
+): string {
   if (table.rows === 0) return "";
+
+  for (const plugin of plugins) {
+    const result = plugin.render(table);
+    if (result !== null) return result;
+  }
 
   const rows: string[] = [];
   for (let r = 0; r < table.rows; r++) {
@@ -50,7 +57,10 @@ export function renderTableGridToMarkdown(table: TableGrid): string {
   }
 
   const normalizedMatrix = normalizeShiftedSparseColumns(matrix);
-  const { matrix: renderedMatrix, notes } = splitTrailingFootnoteRows(normalizedMatrix);
+  const promotedMatrix = promoteSubHeaderPrefixes(normalizedMatrix);
+  const { matrix: matrixAfterInlineFootnotes, notes: inlineNotes } = extractInlineCellFootnotes(promotedMatrix);
+  const { matrix: renderedMatrix, notes: trailingNotes } = splitTrailingFootnoteRows(matrixAfterInlineFootnotes);
+  const notes = [...inlineNotes, ...trailingNotes];
 
   const header = `| ${renderedMatrix[0].join(" | ")} |`;
   const divider = `| ${Array.from({ length: renderedMatrix[0].length }, () => "---").join(" | ")} |`;
@@ -116,6 +126,93 @@ function normalizeShiftedSparseColumns(matrix: string[][]): string[][] {
   return copy.map((row) => keepCols.map((c) => row[c]));
 }
 
+/**
+ * When a data row has ≥2 parenthesized qualifiers in non-first columns
+ * (and the first column is empty), promote them into the header row and
+ * remove the now-empty qualifier row.
+ *
+ * Two forms are handled:
+ *   1. Full-cell content is a parenthesized phrase — produced when
+ *      cellResolver's Y-cluster splitting has already separated sub-rows.
+ *   2. The first <br>-delimited part of a cell is parenthesized — fallback
+ *      for cases where Y-cluster splitting did not trigger.
+ *
+ * Requiring ≥2 matching columns prevents false positives on ordinary cells.
+ */
+function promoteSubHeaderPrefixes(matrix: string[][]): string[][] {
+  if (matrix.length < 2) return matrix;
+
+  const PAREN_RE = /^\([^)]{1,40}\)$/;
+
+  const result = matrix.map((row) => [...row]);
+  const cols = matrix[0].length;
+  const rowsToRemove = new Set<number>();
+
+  for (let r = 1; r < result.length; r++) {
+    if (rowsToRemove.has(r)) continue;
+
+    const promotable: Array<{ col: number; prefix: string; isFullCell: boolean }> = [];
+    for (let col = 1; col < cols; col++) {
+      const cell = (result[r][col] ?? "").trim();
+      if (!cell) continue;
+      const parts = cell.split("<br>");
+      if (parts.length === 1 && PAREN_RE.test(cell)) {
+        // Form 1: entire cell is a parenthesized qualifier
+        promotable.push({ col, prefix: cell, isFullCell: true });
+      } else if (parts.length >= 2 && PAREN_RE.test(parts[0].trim())) {
+        // Form 2: first <br> segment is a parenthesized qualifier
+        promotable.push({ col, prefix: parts[0].trim(), isFullCell: false });
+      }
+    }
+
+    if (promotable.length < 2) continue;
+    // For the full-cell form, also require the first column to be empty
+    // so we don't accidentally promote rows that have substantive data there.
+    if (promotable.some((p) => p.isFullCell) && result[r][0].trim().length > 0) continue;
+
+    for (const { col, prefix, isFullCell } of promotable) {
+      result[0][col] = result[0][col].trim() ? `${result[0][col]} ${prefix}` : prefix;
+      if (isFullCell) {
+        result[r][col] = "";
+      } else {
+        const parts = result[r][col].split("<br>");
+        result[r][col] = parts.slice(1).join("<br>");
+      }
+    }
+
+    if (result[r].every((cell) => cell.trim().length === 0)) {
+      rowsToRemove.add(r);
+    }
+  }
+
+  return result.filter((_, r) => !rowsToRemove.has(r));
+}
+
+/**
+ * Extract ※-prefixed notes that are appended (via <br>) to cell content into
+ * standalone footnotes below the table.  A ※ part is extracted only when the
+ * cell also has non-※ content; a cell whose entire content is a ※ line (e.g.
+ * a data value like "※3.4%") is left untouched.
+ */
+function extractInlineCellFootnotes(matrix: string[][]): { matrix: string[][]; notes: string[] } {
+  const notes: string[] = [];
+  const result = matrix.map((row, r) =>
+    row.map((cell) => {
+      // Leave the header row untouched
+      if (r === 0) return cell;
+      const parts = cell.split("<br>");
+      const noteParts = parts.filter((p) => p.trim().startsWith("※"));
+      const mainParts = parts.filter((p) => !p.trim().startsWith("※"));
+      if (noteParts.length > 0 && mainParts.length > 0) {
+        notes.push(...noteParts.map((p) => p.trim()));
+        return mainParts.join("<br>");
+      }
+      return cell;
+    })
+  );
+  return { matrix: result, notes };
+}
+
 function splitTrailingFootnoteRows(matrix: string[][]): { matrix: string[][]; notes: string[] } {
   if (matrix.length <= 1) return { matrix, notes: [] };
 
@@ -144,15 +241,6 @@ function splitTrailingFootnoteRows(matrix: string[][]): { matrix: string[][]; no
 
   const pruned = matrix.slice(0, Math.max(cut, 1));
   return { matrix: pruned, notes };
-}
-
-function parsePipeRow(line: string): string[] {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) return [];
-  return trimmed
-    .slice(1, -1)
-    .split("|")
-    .map((cell) => cell.trim());
 }
 
 /**
@@ -272,6 +360,31 @@ function normalizeDetachedFirstColumnTables(
     }
   }
   return out;
+}
+
+function applyPageBlockPlugins(
+  blocks: Array<{ topY: number; content: string }>,
+  plugins: PageBlockPlugin[]
+): Array<{ topY: number; content: string }> {
+  return plugins.reduce(
+    (current, plugin) => plugin.transform(current),
+    blocks
+  );
+}
+
+function removeBottomPageNumberBlocks(
+  blocks: Array<{ topY: number; content: string; isTabular?: boolean }>
+): Array<{ topY: number; content: string; isTabular?: boolean }> {
+  const PAGE_NUM_BLOCK_RE = /^(?:#{1,6}\s*)?\d+\s*$/;
+  const BOTTOM_Y_THRESHOLD = 120;
+
+  return blocks.filter((block, idx) => {
+    const text = block.content.trim();
+    const isBottomTail = idx >= blocks.length - 3;
+    const isPageNum = PAGE_NUM_BLOCK_RE.test(text);
+    const isBottom = block.topY <= BOTTOM_Y_THRESHOLD;
+    return !(isBottomTail && isBottom && isPageNum);
+  });
 }
 
 // Y tolerance for grouping text boxes onto the same visual line (pts)
@@ -509,7 +622,9 @@ export function renderPageContent(
   pageNumber: number,
   freeTextBoxes: TextBox[],
   tables: TableGrid[],
-  plugins: TextLinePlugin[] = []
+  plugins: TextLinePlugin[] = [],
+  pageBlockPlugins: PageBlockPlugin[] = defaultPageBlockPlugins,
+  borderlessTablePlugins: BorderlessTablePlugin[] = defaultBorderlessTablePlugins
 ): string {
   type Block = { topY: number; content: string; isTabular?: boolean };
   const blocks: Block[] = [];
@@ -524,7 +639,7 @@ export function renderPageContent(
 
   for (const table of tables) {
     const md = table.isBorderless
-      ? renderBorderlessTableToMarkdown(table)
+      ? renderBorderlessTableToMarkdownWithPlugins(table, borderlessTablePlugins)
       : renderTableGridToMarkdown(table);
     if (md.length > 0) {
       blocks.push({ topY: table.topY ?? 0, content: md });
@@ -532,11 +647,13 @@ export function renderPageContent(
   }
 
   blocks.sort((a, b) => b.topY - a.topY);
+  const pageNumberRemoved = removeBottomPageNumberBlocks(blocks);
 
-  const afterHeadingMerge = mergeConsecutiveHeadings(blocks, bodyFontSize);
+  const afterHeadingMerge = mergeConsecutiveHeadings(pageNumberRemoved, bodyFontSize);
   const merged = mergeParagraphWraps(afterHeadingMerge, bodyFontSize);
   const normalized = normalizeDetachedFirstColumnTables(merged);
-  const body = normalized.map((b) => b.content).join("\n\n");
+  const postProcessed = applyPageBlockPlugins(normalized, pageBlockPlugins);
+  const body = postProcessed.map((b) => b.content).join("\n\n");
   return `<!-- page:${pageNumber} -->\n${body}`.trim();
 }
 

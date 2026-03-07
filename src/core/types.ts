@@ -79,6 +79,17 @@ export type ExtractOptions = {
    * Defaults to `[tdnetHeadingPlugin]` when not specified.
    */
   plugins?: import("../markdown/plugins/types.js").TextLinePlugin[];
+  /**
+   * Ordered list of block-level post-process plugins applied after generic
+   * render normalization.
+   * Defaults to `defaultPageBlockPlugins` when not specified.
+   */
+  postProcessPlugins?: import("../markdown/plugins/types.js").PageBlockPlugin[];
+  /**
+   * Ordered list of borderless-table render plugins.
+   * Defaults to `defaultBorderlessTablePlugins` when not specified.
+   */
+  borderlessTablePlugins?: import("../markdown/plugins/types.js").BorderlessTablePlugin[];
 };
 
 export type ExtractResult = {

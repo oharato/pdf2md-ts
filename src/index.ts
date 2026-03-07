@@ -10,6 +10,8 @@ export async function extractTablesFromPdf(filePath: string, options: ExtractOpt
   const pdf = await loadPdfDocument(filePath);
   const pages = options.pages ?? Array.from({ length: pdf.numPages }, (_, index) => index + 1);
   const plugins = options.plugins ?? [tdnetHeadingPlugin];
+  const postProcessPlugins = options.postProcessPlugins;
+  const borderlessTablePlugins = options.borderlessTablePlugins;
 
   const tables: TableGrid[] = [];
   const warnings: string[] = [];
@@ -29,7 +31,16 @@ export async function extractTablesFromPdf(filePath: string, options: ExtractOpt
     const consumedSet = new Set(consumedIds);
     const freeTextBoxes = textBoxes.filter((tb) => !consumedSet.has(tb.id));
 
-    pageMarkdowns.push(renderPageContent(pageNumber, freeTextBoxes, grids, plugins));
+    pageMarkdowns.push(
+      renderPageContent(
+        pageNumber,
+        freeTextBoxes,
+        grids,
+        plugins,
+        postProcessPlugins,
+        borderlessTablePlugins,
+      )
+    );
   }
 
   const markdown = pageMarkdowns.join("\n\n");
@@ -37,5 +48,13 @@ export async function extractTablesFromPdf(filePath: string, options: ExtractOpt
 }
 
 export type { ExtractOptions, ExtractResult, TableGrid } from "./core/types.js";
-export type { TextLinePlugin, TextLineContext } from "./markdown/plugins/types.js";
+export type {
+  BorderlessTablePlugin,
+  PageBlock,
+  PageBlockPlugin,
+  TextLinePlugin,
+  TextLineContext,
+} from "./markdown/plugins/types.js";
 export { tdnetHeadingPlugin } from "./markdown/plugins/tdnetHeading.js";
+export { defaultBorderlessTablePlugins } from "./markdown/plugins/borderlessTablePlugins.js";
+export { defaultPageBlockPlugins } from "./markdown/plugins/pageBlockPlugins.js";

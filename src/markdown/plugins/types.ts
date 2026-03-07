@@ -36,3 +36,34 @@ export type TextLinePlugin = {
    */
   headingPrefix(ctx: TextLineContext): string | null;
 };
+
+/**
+ * A rendered page block (free text line or table markdown chunk).
+ */
+export type PageBlock = {
+  topY: number;
+  content: string;
+};
+
+/**
+ * Plugin interface for block-level markdown post-processing.
+ *
+ * Implementations should avoid mutating input arrays in place.
+ */
+export type PageBlockPlugin = {
+  /** Unique identifier shown in debug output. */
+  name: string;
+  /** Transform page blocks and return the updated block list. */
+  transform(blocks: PageBlock[]): PageBlock[];
+};
+
+/**
+ * Plugin for borderless table rendering.
+ * Return `null` to defer to the next plugin.
+ */
+export type BorderlessTablePlugin = {
+  /** Unique identifier shown in debug output. */
+  name: string;
+  /** Return markdown if handled, otherwise `null`. */
+  render(table: import("../../core/types.js").TableGrid): string | null;
+};

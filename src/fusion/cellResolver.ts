@@ -15,18 +15,48 @@ function uniqueSorted(values: number[]): number[] {
 /**
  * Count distinct X positions of vertical segments that physically bridge the
  * gap between upperY (higher) and lowerY (lower).
+ *
+ * Accepts both single segments that span the full range AND chains of consecutive
+ * short segments (e.g. when a PDF draws each row's border as a separate segment).
  */
 function countBridgingVLineCols(upperY: number, lowerY: number, verticalSegments: Segment[]): number {
   const EPS = 1.5;
   const xs = new Set<number>();
+  // Group segments by rounded X coordinate.
+  const byX = new Map<number, Array<{ min: number; max: number }>>();
   for (const seg of verticalSegments) {
-    const segMin = Math.min(seg.y1, seg.y2);
-    const segMax = Math.max(seg.y1, seg.y2);
-    if (segMin <= lowerY + EPS && segMax >= upperY - EPS) {
-      xs.add(Math.round(seg.x1));
-    }
+    const rx = Math.round(seg.x1);
+    if (!byX.has(rx)) byX.set(rx, []);
+    byX.get(rx)!.push({ min: Math.min(seg.y1, seg.y2), max: Math.max(seg.y1, seg.y2) });
+  }
+  for (const [rx, intervals] of byX) {
+    if (chainCoversRange(intervals, lowerY, upperY, EPS)) xs.add(rx);
   }
   return xs.size;
+}
+
+/**
+ * Return true when a set of Y intervals, treated as a chain, collectively cover
+ * the range [lowerY, upperY] without gaps exceeding EPS.
+ */
+function chainCoversRange(
+  intervals: Array<{ min: number; max: number }>,
+  lowerY: number,
+  upperY: number,
+  EPS: number
+): boolean {
+  // Sort ascending by min
+  const sorted = [...intervals].sort((a, b) => a.min - b.min);
+  // Walk from lowerY upward, extending covered range one interval at a time.
+  // covered tracks how far up we can reach using connected intervals.
+  // A segment is connected when its min is within EPS of the current covered extent.
+  let covered = lowerY;
+  for (const iv of sorted) {
+    if (iv.min > covered + EPS) break; // gap — chain broken
+    if (iv.max > covered) covered = iv.max;
+    if (covered >= upperY - EPS) return true;
+  }
+  return false;
 }
 
 /**
@@ -37,6 +67,26 @@ function countBridgingVLineCols(upperY: number, lowerY: number, verticalSegments
 const MIN_RICH_BRIDGING_COLS = 3;
 
 /**
+ * Return the set of X positions of vertical segments that bridge [lowerY, upperY].
+ * Used to determine if a Rich→Sparse transition is due to outer-frame-only rows
+ * (rowspan cells) vs. a genuine table boundary.
+ */
+function bridgingXSet(upperY: number, lowerY: number, verticalSegments: Segment[]): Set<number> {
+  const EPS = 1.5;
+  const xs = new Set<number>();
+  const byX = new Map<number, Array<{ min: number; max: number }>>();
+  for (const seg of verticalSegments) {
+    const rx = Math.round(seg.x1);
+    if (!byX.has(rx)) byX.set(rx, []);
+    byX.get(rx)!.push({ min: Math.min(seg.y1, seg.y2), max: Math.max(seg.y1, seg.y2) });
+  }
+  for (const [rx, intervals] of byX) {
+    if (chainCoversRange(intervals, lowerY, upperY, EPS)) xs.add(rx);
+  }
+  return xs;
+}
+
+/**
  * Split a sorted-descending list of Y line positions into groups that correspond
  * to individual tables.  Two consecutive Y lines belong to the same table only if
  * at least one vertical segment physically bridges the gap between them.
@@ -45,12 +95,21 @@ const MIN_RICH_BRIDGING_COLS = 3;
  * to "sparse" (< 3), the groups are split even if bridging still occurs — this
  * separates a fully-bordered table from an adjacent header-only / border-only table
  * that merely shares the same outer vertical border.
+ *
+ * Exception: if the sparse gap is bridged only by the leftmost and rightmost
+ * vertical lines (outer frame), this indicates a rowspan cell within the same
+ * table rather than a separate table, so the group is kept together.
  */
 function splitYLinesIntoGroups(yLines: number[], verticalSegments: Segment[]): number[][] {
   if (yLines.length === 0) return [];
 
   // epsilon: allow small floating-point slop when comparing segment extents to grid lines
   const EPS = 1.5;
+
+  // Compute the overall xMin and xMax across all vertical segments to identify outer frame.
+  const allX = verticalSegments.map((s) => Math.round(s.x1));
+  const globalXMin = allX.length > 0 ? Math.min(...allX) : 0;
+  const globalXMax = allX.length > 0 ? Math.max(...allX) : 0;
 
   const groups: number[][] = [];
   let currentGroup: number[] = [yLines[0]];
@@ -61,12 +120,11 @@ function splitYLinesIntoGroups(yLines: number[], verticalSegments: Segment[]): n
     const upperY = yLines[i - 1]; // larger Y (higher on page in PDF coordinates)
     const lowerY = yLines[i];     // smaller Y
 
-    // A vertical segment bridges [lowerY, upperY] when it reaches both boundaries
-    const isBridged = verticalSegments.some((seg) => {
-      const segMin = Math.min(seg.y1, seg.y2);
-      const segMax = Math.max(seg.y1, seg.y2);
-      return segMin <= lowerY + EPS && segMax >= upperY - EPS;
-    });
+    // A vertical segment (or chain of consecutive segments at the same X) bridges
+    // [lowerY, upperY].  We reuse the per-X chain logic already in
+    // countBridgingVLineCols: if any X position has ≥1 bridging chain, the gap
+    // is considered bridged.
+    const isBridged = countBridgingVLineCols(upperY, lowerY, verticalSegments) > 0;
 
     if (!isBridged) {
       // Physical gap — start a new group
@@ -81,10 +139,18 @@ function splitYLinesIntoGroups(yLines: number[], verticalSegments: Segment[]): n
     // Detect column-structure transition: rich → sparse
     // (e.g. multi-column table row followed by border-only rows)
     if (prevBridgingCols >= MIN_RICH_BRIDGING_COLS && cols < MIN_RICH_BRIDGING_COLS) {
-      groups.push(currentGroup);
-      currentGroup = [yLines[i - 1], yLines[i]];
-      prevBridgingCols = cols;
-      continue;
+      // Exception: if the sparse gap is bridged only by outer-frame lines, it is
+      // a rowspan row within the same table, not a new table.
+      const bridgingXs = bridgingXSet(upperY, lowerY, verticalSegments);
+      const isOuterFrameOnly = [...bridgingXs].every(
+        (x) => Math.abs(x - globalXMin) <= EPS || Math.abs(x - globalXMax) <= EPS
+      );
+      if (!isOuterFrameOnly) {
+        groups.push(currentGroup);
+        currentGroup = [yLines[i - 1], yLines[i]];
+        prevBridgingCols = cols;
+        continue;
+      }
     }
 
     currentGroup.push(yLines[i]);
@@ -224,6 +290,11 @@ function buildTableGrid(
     consumedIds.push(textBox.id);
   }
 
+  // Before merging, detect rows where text boxes cluster into multiple distinct
+  // Y levels and split them into actual sub-rows (purely positional, no text
+  // pattern matching).
+  rows = expandSubRowsByYClusters(rows, cols, cells, cellBoxes);
+
   for (const [cell, boxes] of cellBoxes.entries()) {
     boxes.sort((a, b) => b.bounds.top - a.bounds.top); // Sort descending by Y
     const lines: string[] = [];
@@ -248,6 +319,137 @@ function buildTableGrid(
 
   const grid = pruneEmptyRowsAndCols({ pageNumber, rows, cols, cells, warnings: [], topY: yLines[0] });
   return { grid, consumedIds };
+}
+
+/**
+ * Minimum Y gap (in points) between two text-box mid-Y values to treat them
+ * as belonging to distinct visual rows (sub-row clusters) within a grid cell.
+ */
+const Y_CLUSTER_GAP = 10;
+
+/**
+ * Minimum number of columns that must share a "top-only" cluster for that
+ * cluster to be promoted into a new sub-row.
+ */
+const MIN_COLS_IN_TOP_CLUSTER = 2;
+
+function assignToYCluster(y: number, clusters: number[]): number {
+  let closest = 0;
+  let closestDist = Math.abs(y - clusters[0]);
+  for (let k = 1; k < clusters.length; k++) {
+    const d = Math.abs(y - clusters[k]);
+    if (d < closestDist) { closestDist = d; closest = k; }
+  }
+  return closest;
+}
+
+/**
+ * Detect rows where text boxes cluster into ≥2 distinct Y levels, where the
+ * top-Y cluster spans some-but-not-all columns.  When found, expand the grid
+ * row into multiple sub-rows so that each Y level occupies its own row.
+ *
+ * This is a purely positional approach — it does not inspect text content.
+ * It handles the common TDnet pattern where a table header spans only the
+ * right-side columns (e.g. "(FY2026)" sub-headers) while the left label
+ * column has text only in the lower part of the cell.
+ */
+function expandSubRowsByYClusters(
+  originalRows: number,
+  cols: number,
+  cells: TableCell[],
+  cellBoxes: Map<TableCell, TextBox[]>
+): number {
+  let addedRows = 0;
+
+  for (let origRow = 0; origRow < originalRows; origRow++) {
+    const currentRow = origRow + addedRows;
+
+    // Collect (cell, col, boxes) for this row.
+    const rowCellInfos: Array<{ cell: TableCell; col: number; boxes: TextBox[] }> = [];
+    for (let col = 0; col < cols; col++) {
+      const cell = cells.find((c) => c.row === currentRow && c.col === col);
+      if (!cell) continue;
+      const boxes = cellBoxes.get(cell);
+      if (boxes && boxes.length > 0) rowCellInfos.push({ cell, col, boxes });
+    }
+    if (rowCellInfos.length === 0) continue;
+
+    // Collect all mid-Y values across the entire row.
+    const allMidYs = rowCellInfos.flatMap(({ boxes }) =>
+      boxes.map((b) => (b.bounds.top + b.bounds.bottom) / 2)
+    );
+
+    // Build Y clusters sorted descending (highest on page first).
+    const sortedY = [...new Set(allMidYs.map((y) => Math.round(y * 10) / 10))].sort((a, b) => b - a);
+    const clusters: number[] = [sortedY[0]];
+    for (let i = 1; i < sortedY.length; i++) {
+      if (clusters[clusters.length - 1] - sortedY[i] > Y_CLUSTER_GAP) {
+        clusters.push(sortedY[i]);
+      }
+    }
+    if (clusters.length < 2) continue;
+
+    // Determine which columns have at least one box in the top (highest-Y) cluster.
+    const colsInTopCluster = new Set<number>();
+    const totalNonEmptyCols = new Set<number>();
+    for (const { col, boxes } of rowCellInfos) {
+      totalNonEmptyCols.add(col);
+      if (boxes.some((b) => assignToYCluster((b.bounds.top + b.bounds.bottom) / 2, clusters) === 0)) {
+        colsInTopCluster.add(col);
+      }
+    }
+
+    // Only split when the top cluster is "discriminating":
+    // it spans ≥ MIN_COLS but NOT all non-empty columns.
+    // When all columns share the same Y structure the table is uniformly
+    // multi-line and should not be split.
+    if (colsInTopCluster.size < MIN_COLS_IN_TOP_CLUSTER) continue;
+    if (colsInTopCluster.size >= totalNonEmptyCols.size) continue;
+
+    // Do not split when every "sparse" column (not in top cluster) has only a
+    // single text box.  Such columns are rowspan cells that span from the top
+    // portion down — splitting them would wrongly create an empty row.
+    const sparseColsHaveMultipleBoxes = rowCellInfos.some(
+      ({ col, boxes }) => !colsInTopCluster.has(col) && boxes.length > 1
+    );
+    if (!sparseColsHaveMultipleBoxes) continue;
+
+    const numSubRows = clusters.length;
+    const numNewRows = numSubRows - 1;
+
+    // Shift all rows that come after currentRow.
+    for (const cell of cells) {
+      if (cell.row > currentRow) cell.row += numNewRows;
+    }
+
+    // Create new empty cells for the additional sub-rows.
+    for (let subRow = 1; subRow < numSubRows; subRow++) {
+      for (let col = 0; col < cols; col++) {
+        cells.push({ row: currentRow + subRow, col, text: "", rowSpan: 1, colSpan: 1 });
+      }
+    }
+
+    // Redistribute boxes: each box goes to the sub-row of its nearest Y cluster.
+    for (const { cell: origCell, col, boxes } of rowCellInfos) {
+      const subRowBoxGroups: TextBox[][] = Array.from({ length: numSubRows }, () => []);
+      for (const box of boxes) {
+        const cy = (box.bounds.top + box.bounds.bottom) / 2;
+        subRowBoxGroups[assignToYCluster(cy, clusters)].push(box);
+      }
+      cellBoxes.set(origCell, subRowBoxGroups[0]);
+      if (subRowBoxGroups[0].length === 0) cellBoxes.delete(origCell);
+      for (let subRow = 1; subRow < numSubRows; subRow++) {
+        if (subRowBoxGroups[subRow].length > 0) {
+          const newCell = cells.find((c) => c.row === currentRow + subRow && c.col === col);
+          if (newCell) cellBoxes.set(newCell, subRowBoxGroups[subRow]);
+        }
+      }
+    }
+
+    addedRows += numNewRows;
+  }
+
+  return originalRows + addedRows;
 }
 
 export type ResolvedPage = {
@@ -673,7 +875,7 @@ const BORDERLESS_MAX_ROW_GAP = 30;
     cells.push({ row: r, col: 1, text: tableData[r].value, rowSpan: 1, colSpan: 1 });
   }
 
-  const topY = visualRows[best.startIdx].midY;
+  const topY = trimmedRows[0]?.midY ?? visualRows[best.startIdx].midY;
   const grid: TableGrid = { pageNumber, rows, cols, cells, warnings: [], topY, isBorderless: true };
   return { grid, consumedIds };
 }
