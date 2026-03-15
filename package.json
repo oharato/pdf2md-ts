@@ -1,5 +1,5 @@
 {
-  "name": "pdf2md-ts",
+  "name": "@oharato/pdf2md-ts",
   "version": "0.1.0",
   "publishConfig": { "access": "public" },
   "repository": { "type": "git", "url": "https://github.com/oharato/pdf2md-ts.git" },
