@@ -2,7 +2,8 @@
 
 罫線あり表PDFを Markdown テーブルへ変換する TypeScript ライブラリ。
 
-ラスタライズを一切行わず、PDF の**ベクトル罫線（constructPath + eoFill）**と**テキストボックス起点のレイキャスト**を組み合わせたハイブリッドアプローチで高精度な表抽出を実現します。
+ラスタライズを一切行わず、PDF の**ベクトル罫線（constructPath + eoFill）**と**テキストボックス起点のレイキャスト**を組み合わせたハイブリッドアプローチで表を高精度に抽出します。
+また、表以外の**フリーテキストの抽出**や、プラグイン機構を通じた**見出し判定・罫線なし表のカスタムレンダリング**にも対応しています。
 
 ---
 
@@ -83,7 +84,7 @@ done
 ## API
 
 ```typescript
-import { extractTablesFromPdf } from "./src/index.js";
+import { extractTablesFromPdf } from "@oharato/pdf2md-ts";
 
 const result = await extractTablesFromPdf("pdf/document.pdf", {
   pages: [1, 2],   // 省略時は全ページ
@@ -99,8 +100,11 @@ console.log(result.warnings);   // 警告メッセージ
 
 ```typescript
 type ExtractOptions = {
-  pages?: number[];   // 対象ページ番号（1-indexed）
-  debug?: boolean;    // デバッグモード
+  pages?: number[];                 // 対象ページ番号（1-indexed）
+  debug?: boolean;                  // デバッグモード
+  plugins?: TextLinePlugin[];       // 見出し判定などのテキスト行プラグイン
+  postProcessPlugins?: PageBlockPlugin[];         // ブロックレベルの事後処理プラグイン
+  borderlessTablePlugins?: BorderlessTablePlugin[]; // 罫線なし表の描画プラグイン
 };
 ```
 
