@@ -68,10 +68,6 @@ describe("renderTableGridToMarkdown", () => {
 // ---- renderPageContent (プラグインなし) -------------------------------------
 
 describe("renderPageContent (plugins=[])", () => {
-  it("ページコメントヘッダが含まれる", () => {
-    const result = renderPageContent(1, [box("テスト")], [], []);
-    expect(result).toMatch(/^<!-- page:1 -->/);
-  });
 
   it("フリーテキストがそのまま出力される", () => {
     const result = renderPageContent(1, [box("本文テキスト")], [], []);
@@ -83,10 +79,6 @@ describe("renderPageContent (plugins=[])", () => {
     expect(result).toContain("| 氏名 | 役職 |");
   });
 
-  it("テキストボックスなし・テーブルなし → コメントのみ", () => {
-    const result = renderPageContent(2, [], [], []);
-    expect(result).toBe("<!-- page:2 -->");
-  });
 
   it("同一Y座標の複数テキストボックスは1行に結合される", () => {
     const boxes = [

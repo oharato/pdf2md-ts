@@ -654,12 +654,12 @@ export function renderPageContent(
   const normalized = normalizeDetachedFirstColumnTables(merged);
   const postProcessed = applyPageBlockPlugins(normalized, pageBlockPlugins);
   const body = postProcessed.map((b) => b.content).join("\n\n");
-  return `<!-- page:${pageNumber} -->\n${body}`.trim();
+  return body.trim();
 }
 
 export function renderMultipleTablesToMarkdown(tables: TableGrid[]): string {
   return tables
-    .map((table) => `<!-- page:${table.pageNumber} -->\n${renderTableGridToMarkdown(table)}`)
+    .map((table) => renderTableGridToMarkdown(table))
     .join("\n\n")
     .trim();
 }
