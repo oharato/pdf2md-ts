@@ -13,6 +13,7 @@ export async function loadPdfDocument(filePath: string): Promise<PDFDocumentProx
     url: filePath,
     cMapUrl,
     cMapPacked: true,
-    standardFontDataUrl
+    standardFontDataUrl,
+    verbosity: 0
   }).promise;
 }
